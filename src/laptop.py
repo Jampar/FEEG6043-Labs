@@ -56,7 +56,7 @@ class LaptopPilot:
 
         # control parameters        
         self.tau_s = 1 # s to remove along track error
-        self.L = 0.1 # m distance to remove normal and angular error
+        self.L = 0.2 # m distance to remove normal and angular error
         self.v_max = 0.2 # fastest the robot can go
         self.w_max = np.deg2rad(30) # fastest the robot can turn
 
@@ -201,8 +201,8 @@ class LaptopPilot:
         # pick waypoints as current pose relative or absolute northings and eastings
         if self.relative_path == True:
             for i in range(len(self.northings_path)):
-                self.northings_path[i] += self.measured_pose_northings_m #offset by current northings
-                self.eastings_path[i] += self.measured_pose_eastings_m #offset by current eastings
+                self.northings_path[i] += self.est_pose_northings_m #offset by current northings
+                self.eastings_path[i] += self.est_pose_eastings_m #offset by current eastings
 
             # convert path to matrix and create a trajectory class instance
             C = l2m([self.northings_path, self.eastings_path])        
