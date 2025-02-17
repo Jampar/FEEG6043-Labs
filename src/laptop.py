@@ -18,6 +18,10 @@ from model_feeg6043 import ActuatorConfiguration
 from math_feeg6043 import Vector
 from model_feeg6043 import rigid_body_kinematics
 from model_feeg6043 import RangeAngleKinematics
+from model_feeg6043 import TrajectoryGenerate
+from math_feeg6043 import l2m
+from model_feeg6043 import feedback_control
+from math_feeg6043 import Inverse, HomogeneousTransformation
 
 class LaptopPilot:
     def __init__(self, simulation):
@@ -40,10 +44,23 @@ class LaptopPilot:
         print("Connecting to robot with IP", self.robot_ip)
         self.aruco_driver = ArUcoUDPDriver(aruco_params, parent=self)
 
-        ############# INITIALISE ATTRIBUTES ##########        
-        # path
-        self.northings_path = []
-        self.eastings_path = []        
+        ############# INITIALISE ATTRIBUTES ##########              
+
+        #path
+        self.northings_path = [0.2, 1, 1, 0.2, 0.2, 1] # create a list of waypoints
+        self.eastings_path = [0, 0, 1, 1, 0, 0] # create a list of waypoints
+        self.relative_path = True # False if you want it to be absolute
+        self.velocity = 0.2
+        self.acceleration = 0.2
+        self.arc_radius = 0.1
+
+        # control parameters        
+        self.tau_s = 1 # s to remove along track error
+        self.L = 0.1 # m distance to remove normal and angular error
+        self.v_max = 0.2 # fastest the robot can go
+        self.w_max = np.deg2rad(30) # fastest the robot can turn
+
+        self.initialise_control = True # False once control gains is initialised 
 
         # model pose
         self.est_pose_northings_m = None
@@ -180,7 +197,22 @@ class LaptopPilot:
         pose_msg.pose.orientation = quat        
         return pose_msg
 
+    def generate_trajectory(self):
+        # pick waypoints as current pose relative or absolute northings and eastings
+        if self.relative_path == True:
+            for i in range(len(self.northings_path)):
+                self.northings_path[i] += self.measured_pose_northings_m #offset by current northings
+                self.eastings_path[i] += self.measured_pose_eastings_m #offset by current eastings
 
+            # convert path to matrix and create a trajectory class instance
+            C = l2m([self.northings_path, self.eastings_path])        
+            self.path = TrajectoryGenerate(self.northings_path, self.eastings_path)        
+            
+            # set trajectory variables (velocity, acceleration and turning arc radius)
+            self.path.path_to_trajectory(self.velocity, self.acceleration) #velocity and acceleration
+            self.path.turning_arcs(self.arc_radius) #turning radius
+            self.path.wp_id=0 #initialises the next waypoint
+            
     def run(self, time_to_run=-1):
         self.start_time = datetime.utcnow().timestamp()
         
@@ -227,20 +259,23 @@ class LaptopPilot:
 
             # logs the data            
             self.datalog.log(msg, topic_name="/aruco")                                              
-    
+
              ###### wait for the first sensor info to initialize the pose ######
             if self.initialise_pose == True:
                 self.est_pose_northings_m = self.measured_pose_northings_m
                 self.est_pose_eastings_m = self.measured_pose_eastings_m
                 self.est_pose_yaw_rad = self.measured_pose_yaw_rad
+                
+                self.generate_trajectory() #generate trajectory
 
                 # get current time and determine timestep
                 self.t_prev = datetime.utcnow().timestamp() #initialise the time
                 self.t = 0 #elapsed time
                 time.sleep(0.1) #wait for approx a timestep before proceeding
-                
+
                 # path and tragectory are initialised
                 self.initialise_pose = False 
+
 
         if self.initialise_pose != True:  
 
@@ -276,22 +311,60 @@ class LaptopPilot:
            
             # logs the data            
             self.datalog.log(msg, topic_name="/est_pose")
-        
-        ################################################################################
-        #  TODO: Implement your controller here                                        #
 
-        wheel_speed_msg = Vector3Stamped()
-        wheel_speed_msg.vector.x = 1 * np.pi  # Right wheel 1 rev/s = 1*pi rad/s
-        wheel_speed_msg.vector.y = 2 * np.pi  # Left wheel 1 rev/s = 2*pi rad/s
 
-        self.cmd_wheelrate_right = wheel_speed_msg.vector.x
-        self.cmd_wheelrate_left = wheel_speed_msg.vector.y
-        ################################################################################
+            #################### Trajectory sample #################################    
+            # feedforward control: check wp progress and sample reference trajectory
+            self.path.wp_progress(self.t, p_robot, self.arc_radius) # fill turning radius
+            p_ref, u_ref = self.path.p_u_sample(self.t) #sample the path at the current elapsetime (i.e., seconds from start of motion modelling)
+             
+            ################################################################################
 
-        # > Act < #
-        # Send commands to the robot        
-        self.wheel_speed_pub.publish(wheel_speed_msg)
-        self.datalog.log(wheel_speed_msg, topic_name="/wheel_speeds_cmd")
+            # feedback control: get pose change to desired trajectory from body
+            dp = p_ref-p_robot
+            dp[2] = (dp[2] + np.pi) % (2 * np.pi) - np.pi              
+            H_eb = HomogeneousTransformation(p_robot[0:2],p_robot[2])
+            ds=Inverse(H_eb.H_R)@dp    
+
+            #for first step only we compute lateral and angular gains based on the desired feedforward components 
+            #(note: steering control needs motion to deal with normal and along track offset)
+            ks = 1/self.tau_s
+            if self.initialise_control == True:
+                kn = 2*(u_ref[0])/self.L**2
+                kg = u_ref[0]/self.L
+
+            # update the controls 
+            du = feedback_control(ds, ks, kn, kg)     
+
+            # total control
+            u = u_ref + du
+
+            # update control gains for the next timestep
+            kn = 2*u[0]/self.L
+            kg = u[0]/self.L
+
+            # impose actuator limites
+            if u[1]>self.w_max: u[1]=self.w_max
+            if u[1]<-self.w_max: u[1]=-self.w_max
+            if u[0]>self.v_max: u[0]=self.v_max
+            if u[0]<-self.v_max: u[0]=-self.v_max
+
+            # actuator commands                 
+            q = self.ddrive.inv_kinematics(u)            
+
+            wheel_speed_msg = Vector3Stamped()
+            wheel_speed_msg.vector.x = q[0,0] # Right wheelspeed rad/s
+            wheel_speed_msg.vector.y = q[1,0] # Left wheelspeed rad/s
+
+            self.cmd_wheelrate_right = wheel_speed_msg.vector.x
+            self.cmd_wheelrate_left = wheel_speed_msg.vector.y
+
+            ################################################################################
+
+            # > Act < #
+            # Send commands to the robot        
+            self.wheel_speed_pub.publish(wheel_speed_msg)
+            self.datalog.log(wheel_speed_msg, topic_name="/wheel_speeds_cmd")
 
 
 if __name__ == "__main__":
