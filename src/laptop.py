@@ -51,8 +51,8 @@ class LaptopPilot:
         self.est_pose_yaw_rad = None
 
         # modelling parameters
-        wheel_distance = 0.075 # measure this 
-        wheel_diameter = 0.095 # measure this
+        wheel_distance = 0.18 # measure this 
+        wheel_diameter = 0.08 # measure this
         self.ddrive = ActuatorConfiguration(wheel_distance, wheel_diameter) #look at your tutorial and see how to use this
 
         self.initialise_pose = True # False once the pose is initialised 
@@ -247,8 +247,8 @@ class LaptopPilot:
             ################### Motion Model ##############################
             # convert true wheel speeds in to twist
             q = Vector(2)            
-            q[0] = self.measured_wheelrate_left # wheel rate rad/s (measured)
-            q[1] = self.measured_wheelrate_right # wheel rate rad/s (measured)
+            q[0] = self.measured_wheelrate_right # wheel rate rad/s (measured)
+            q[1] = self.measured_wheelrate_left # wheel rate rad/s (measured)
             u = self.ddrive.fwd_kinematics(q)            
             
             #determine the time step
@@ -277,13 +277,12 @@ class LaptopPilot:
             # logs the data            
             self.datalog.log(msg, topic_name="/est_pose")
         
-       
         ################################################################################
         #  TODO: Implement your controller here                                        #
 
         wheel_speed_msg = Vector3Stamped()
-        wheel_speed_msg.vector.x = 2 * np.pi  # Right wheel 1 rev/s = 1*pi rad/s
-        wheel_speed_msg.vector.y = 1 * np.pi  # Left wheel 1 rev/s = 2*pi rad/s
+        wheel_speed_msg.vector.x = 1 * np.pi  # Right wheel 1 rev/s = 1*pi rad/s
+        wheel_speed_msg.vector.y = 2 * np.pi  # Left wheel 1 rev/s = 2*pi rad/s
 
         self.cmd_wheelrate_right = wheel_speed_msg.vector.x
         self.cmd_wheelrate_left = wheel_speed_msg.vector.y
