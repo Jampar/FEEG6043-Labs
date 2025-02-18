@@ -28,7 +28,7 @@ class LaptopPilot:
         # network for sensed pose
         aruco_params = {
             "port": 50000,  # Port to listen to (DO NOT CHANGE)
-            "marker_id": 20,  # Marker ID to listen to (CHANGE THIS to your marker ID)            
+            "marker_id": 24,  # Marker ID to listen to (CHANGE THIS to your marker ID)            
         }
         self.robot_ip = "192.168.90.1"
         
@@ -53,6 +53,7 @@ class LaptopPilot:
         self.velocity = 0.2
         self.acceleration = 0.2
         self.arc_radius = 0.5
+        self.acceptance_radius = 0.2
 
         # control parameters        
         self.tau_s = 1 # s to remove along track error
@@ -68,8 +69,8 @@ class LaptopPilot:
         self.est_pose_yaw_rad = None
 
         # modelling parameters
-        wheel_distance = 0.18 # measure this 
-        wheel_diameter = 0.08 # measure this
+        wheel_distance = 0.17 # measure this 
+        wheel_diameter = 0.073 # measure this
         self.ddrive = ActuatorConfiguration(wheel_distance, wheel_diameter) #look at your tutorial and see how to use this
 
         self.initialise_pose = True # False once the pose is initialised 
@@ -314,7 +315,7 @@ class LaptopPilot:
 
             #################### Trajectory sample #################################    
             # feedforward control: check wp progress and sample reference trajectory
-            self.path.wp_progress(self.t, p_robot, self.arc_radius) # fill turning radius
+            self.path.wp_progress(self.t, p_robot, self.acceptance_radius) # fill turning radius
             p_ref, u_ref = self.path.p_u_sample(self.t) #sample the path at the current elapsetime (i.e., seconds from start of motion modelling)
         
             ################################################################################
