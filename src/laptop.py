@@ -47,16 +47,16 @@ class LaptopPilot:
         ############# INITIALISE ATTRIBUTES ##########              
 
         #path
-        self.northings_path = [0.2, 1, 1, 0.2, 0.2, 1] # create a list of waypoints
-        self.eastings_path = [0, 0, 1, 1, 0, 0] # create a list of waypoints
+        self.northings_path = [0, 1.2, 1.2, 0, 0, 1.2] # create a list of waypoints
+        self.eastings_path = [0, 0, 1.2, 1.2, 0, 0] # create a list of waypoints
         self.relative_path = True # False if you want it to be absolute
         self.velocity = 0.2
         self.acceleration = 0.2
-        self.arc_radius = 0.1
+        self.arc_radius = 0.5
 
         # control parameters        
         self.tau_s = 1 # s to remove along track error
-        self.L = 0.2 # m distance to remove normal and angular error
+        self.L = 0.1 # m distance to remove normal and angular error
         self.v_max = 0.2 # fastest the robot can go
         self.w_max = np.deg2rad(30) # fastest the robot can turn
 
@@ -312,12 +312,11 @@ class LaptopPilot:
             # logs the data            
             self.datalog.log(msg, topic_name="/est_pose")
 
-
             #################### Trajectory sample #################################    
             # feedforward control: check wp progress and sample reference trajectory
             self.path.wp_progress(self.t, p_robot, self.arc_radius) # fill turning radius
             p_ref, u_ref = self.path.p_u_sample(self.t) #sample the path at the current elapsetime (i.e., seconds from start of motion modelling)
-             
+        
             ################################################################################
 
             # feedback control: get pose change to desired trajectory from body
