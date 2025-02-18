@@ -50,16 +50,19 @@ class LaptopPilot:
         self.northings_path = [0, 1.2, 1.2, 0, 0, 1.2] # create a list of waypoints
         self.eastings_path = [0, 0, 1.2, 1.2, 0, 0] # create a list of waypoints
         self.relative_path = True # False if you want it to be absolute
-        self.velocity = 0.2
+        self.velocity = 0.1
         self.acceleration = 0.2
-        self.arc_radius = 0.5
-        self.acceptance_radius = 0.3
+        self.arc_radius = 0.4
+        self.acceptance_radius = 0.2
 
         # control parameters        
         self.tau_s = 1 # s to remove along track error
         self.L = 0.1 # m distance to remove normal and angular error
         self.v_max = 0.2 # fastest the robot can go
         self.w_max = np.deg2rad(30) # fastest the robot can turn
+        self.kn =0 
+        self.kg = 0
+        self.ks = 0
 
         self.initialise_control = True # False once control gains is initialised 
 
@@ -328,20 +331,21 @@ class LaptopPilot:
 
             #for first step only we compute lateral and angular gains based on the desired feedforward components 
             #(note: steering control needs motion to deal with normal and along track offset)
-            ks = 1/self.tau_s
+            self.ks = 1/self.tau_s
             if self.initialise_control == True:
-                kn = 2*(u_ref[0])/self.L**2
-                kg = u_ref[0]/self.L
+                self.kn = 2*(u_ref[0])/(self.L**2)
+                self.kg = u_ref[0]/self.L
+                self.initialise_control = False
 
             # update the controls 
-            du = feedback_control(ds, ks, kn, kg)     
+            du = feedback_control(ds, self.ks, self.kn, self.kg)     
 
             # total control
             u = u_ref + du
 
             # update control gains for the next timestep
-            kn = 2*u[0]/self.L
-            kg = u[0]/self.L
+            self.kn = 2*u[0]/(self.L**2)
+            self.kg = u[0]/self.L
 
             # impose actuator limites
             if u[1]>self.w_max: u[1]=self.w_max
