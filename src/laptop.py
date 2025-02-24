@@ -72,7 +72,7 @@ class LaptopPilot:
         self.est_pose_yaw_rad = None
 
         # modelling parameters
-        wheel_distance = 0.17 # measure this 
+        wheel_distance = 0.085 # measure this 
         wheel_diameter = 0.073 # measure this
         self.ddrive = ActuatorConfiguration(wheel_distance, wheel_diameter) #look at your tutorial and see how to use this
 
