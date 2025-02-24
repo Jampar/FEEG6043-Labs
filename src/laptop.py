@@ -15,15 +15,17 @@ from zeroros.messages import LaserScan, Vector3Stamped, Pose, PoseStamped, Heade
 from zeroros.datalogger import DataLogger
 from zeroros.rate import Rate
 from model_feeg6043 import ActuatorConfiguration
-from math_feeg6043 import Vector
+from math_feeg6043 import Vector, Matrix, Identity
 from model_feeg6043 import rigid_body_kinematics
 from model_feeg6043 import RangeAngleKinematics
 from model_feeg6043 import TrajectoryGenerate
 from math_feeg6043 import l2m
 from model_feeg6043 import feedback_control
 from math_feeg6043 import Inverse, HomogeneousTransformation
+from model_feeg6043 import extended_kalman_filter_predict, extended_kalman_filter_update
 
 class LaptopPilot:
+
     def __init__(self, simulation):
         # network for sensed pose
         aruco_params = {
@@ -216,7 +218,8 @@ class LaptopPilot:
             self.path.path_to_trajectory(self.velocity, self.acceleration) #velocity and acceleration
             self.path.turning_arcs(self.arc_radius) #turning radius
             self.path.wp_id=0 #initialises the next waypoint
-            
+   
+
     def run(self, time_to_run=-1):
         self.start_time = datetime.utcnow().timestamp()
         
@@ -305,7 +308,7 @@ class LaptopPilot:
                                 
             p_robot = rigid_body_kinematics(p_robot, u, dt)
             p_robot[2] = p_robot[2] % (2 * np.pi)  # deal with angle wrapping          
-
+            
             # update for show_laptop.py            
             self.est_pose_northings_m = p_robot[0,0]
             self.est_pose_eastings_m = p_robot[1,0]
