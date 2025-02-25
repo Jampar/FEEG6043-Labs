@@ -9,19 +9,82 @@ import numpy as np
 import argparse
 from datetime import datetime
 import time
+
 from drivers.aruco_udp_driver import ArUcoUDPDriver
+
 from zeroros import Subscriber, Publisher
 from zeroros.messages import LaserScan, Vector3Stamped, Pose, PoseStamped, Header, Quaternion
 from zeroros.datalogger import DataLogger
 from zeroros.rate import Rate
-from model_feeg6043 import ActuatorConfiguration
-from math_feeg6043 import Vector
-from model_feeg6043 import rigid_body_kinematics
-from model_feeg6043 import RangeAngleKinematics
-from model_feeg6043 import TrajectoryGenerate
-from math_feeg6043 import l2m
-from model_feeg6043 import feedback_control
-from math_feeg6043 import Inverse, HomogeneousTransformation
+
+from math_feeg6043 import Vector, Matrix, Identity, l2m, Inverse, HomogeneousTransformation
+from model_feeg6043 import rigid_body_kinematics, feedback_control, extended_kalman_filter_predict, extended_kalman_filter_update
+from model_feeg6043 import ActuatorConfiguration, RangeAngleKinematics, TrajectoryGenerate
+
+# Easy names for indexing
+N = 0
+E = 1
+G = 2
+DOTX = 3
+DOTG = 4
+
+def motion_model(state, u, dt):
+    N_k_1 = state[N]
+    E_k_1 = state[E]
+    G_k_1 = state[G]
+    DOTX_k_1 = state[DOTX]
+    DOTG_k_1 = state[DOTG]
+
+    p = Vector(3)
+    p[0] = N_k_1
+    p[1] = E_k_1
+    p[2] = G_k_1
+    
+    # note rigid_body_kinematics already handles the exception dynamics of w=0
+    p = rigid_body_kinematics(p,u,dt)    
+
+    # vertically joins two vectors together
+    state = np.vstack((p, u))
+    
+    N_k = state[N]
+    E_k = state[E]
+    G_k = state[G]
+    DOTX_k = state[DOTX]
+    DOTG_k = state[DOTG]
+    
+    # Compute its jacobian
+    F = Identity(5)    
+    
+    if abs(DOTG_k) <1E-2: # caters for zero angular rate, but uses a threshold to avoid numerical instability
+        F[N, G] = -DOTG_k * dt * np.sin(G_k_1)
+        F[N, DOTX] = dt * np.cos(G_k_1)
+        F[E, G] = DOTX_k * dt * np.cos(G_k_1)
+        F[E, DOTX] = dt * np.sin(G_k_1)
+        F[G, DOTG] = dt    
+        
+    else:
+        F[N, G] = (DOTX_k/DOTG_k)*(np.cos(G_k)-np.cos(G_k_1))
+        F[N, DOTX] = (1/DOTG_k)*(np.sin(G_k)-np.sin(G_k_1))
+        F[N, DOTG] = (DOTX_k/(DOTG_k**2))*(np.sin(G_k_1)-np.sin(G_k))+(DOTX_k*dt/DOTG_k)*np.cos(G_k)
+        F[E, G] = (DOTX_k/DOTG_k)*(np.sin(G_k)-np.sin(G_k_1))
+        F[E, DOTX] = (1/DOTG_k)*(np.cos(G_k_1)-np.cos(G_k))
+        F[E, DOTG] = (DOTX_k/(DOTG_k**2))*(np.cos(G_k)-np.cos(G_k_1))+(DOTX_k*dt/DOTG_k)*np.sin(G_k)
+        F[G, DOTG] = dt
+
+    return state, F
+    
+def pose_update(x):
+    z = Vector(5)
+    z[N] = x[N]
+    z[E] = x[E]
+    z[G] = x[G]
+
+    H = Matrix(5,5)
+    H[N,N] = 1
+    H[E,E] = 1
+    H[G,G] = 1
+
+    return z, H
 
 class LaptopPilot:
     def __init__(self, simulation):
@@ -58,13 +121,52 @@ class LaptopPilot:
         # control parameters        
         self.tau_s = 1 # s to remove along track error
         self.L = 0.1 # m distance to remove normal and angular error
-        self.v_max = 0.2 # fastest the robot can go
+        self.v_max = 0.1 # fastest the robot can go
         self.w_max = np.deg2rad(30) # fastest the robot can turn
         self.kn =0 
         self.kg = 0
         self.ks = 0
 
         self.initialise_control = True # False once control gains is initialised 
+
+        ### EKF Variables ###
+
+        self.groundtruth_updated = False
+         
+        self.init_state = Vector(5)
+        self.init_state[N] = 0
+        self.init_state[E] = 0
+        self.init_state[G] = 0
+        self.init_state[DOTX] = 0.1
+        self.init_state[DOTG] = 0
+ 
+        print('State:')
+        print(self.init_state)
+
+        self.init_covariance = Identity(5) 
+        self.init_covariance[N,N] = 1**2
+        self.init_covariance[E, E] = 1**2
+        self.init_covariance[G, G] = 1**2
+        self.init_covariance[DOTX, DOTX] = 0.0**2
+        self.init_covariance[DOTG, DOTG] = np.deg2rad(0)**2
+
+        print('\nInitial state covariance:')
+        print(self.init_covariance)
+
+        ###EKF PARAMETERS###
+        self.R = Identity(5) 
+        self.R[N, N] = 0.0**2
+        self.R[E, E] = 0.0**2
+        self.R[G, G] = np.deg2rad(0.0)**2
+        self.R[DOTX, DOTX] = 0.01**2
+        self.R[DOTG, DOTG] = np.deg2rad(0.05)**2
+
+        print('\nProcess noise covariance:')
+        print(self.R)
+
+        # initial state and covariance
+        self.state = self.init_state
+        self.covariance = self.init_covariance
 
         # model pose
         self.est_pose_northings_m = None
@@ -129,6 +231,7 @@ class LaptopPilot:
         self.datalog.log(msg, topic_name="/true_wheel_speeds")
 
     def lidar_callback(self, msg):
+        
         # This is a callback function that is called whenever a message is received        
         print("Received lidar message", msg.header.seq)
             
@@ -170,6 +273,7 @@ class LaptopPilot:
     def groundtruth_callback(self, msg):
         """This callback receives the odometry ground truth from the simulator."""
         self.datalog.log(msg, topic_name="/groundtruth")
+        self.groundtruth_updated = True #Set ground_truth update flag
     
     def pose_parse(self, msg, aruco = False):
         # parser converts pose data to a standard format for logging
@@ -238,6 +342,10 @@ class LaptopPilot:
             self.groundtruth_sub.stop()
             self.true_wheel_speed_sub.stop()
 
+    
+
+    
+
     def infinite_loop(self):
         """Main control loop
 
@@ -297,24 +405,51 @@ class LaptopPilot:
             self.t += dt #add to the elapsed time
             self.t_prev = t_now #update the previous timestep for the next loop
 
+            print(u)
+
+            if dt != 0:                              
+                self.state, self.covariance = extended_kalman_filter_predict(self.state, self.covariance, u, motion_model, self.R, dt)
+
+            if self.groundtruth_updated == True:
+
+                print("New ground_truth available")
+
+                z = Vector(5)
+                Q = Identity(5)        
+                
+                z[N] = self.measured_pose_northings_m
+                z[E] = self.measured_pose_eastings_m
+                z[G] = self.measured_pose_yaw_rad
+
+                self.state, self.covariance = extended_kalman_filter_update(self.state, self.covariance, z, pose_update, Q, wrap_index = G)                      
+                
+                print("EKF Updated")
+
+                self.groundtruth_updated = False
+
+            #p_robot = rigid_body_kinematics(p_robot, u, dt)
+
+            # update for show_laptop.py            
+            self.est_pose_northings_m = self.state[N][0]
+            self.est_pose_eastings_m = self.state[E][0]
+            self.est_pose_yaw_rad = self.state[G][0]
+
+            print(self.state)
+
             # take current pose estimate and update by twist
             p_robot = Vector(3)
             p_robot[0,0] = self.est_pose_northings_m
             p_robot[1,0] = self.est_pose_eastings_m
             p_robot[2,0] = self.est_pose_yaw_rad
-                                
-            p_robot = rigid_body_kinematics(p_robot, u, dt)
             p_robot[2] = p_robot[2] % (2 * np.pi)  # deal with angle wrapping          
-
-            # update for show_laptop.py            
-            self.est_pose_northings_m = p_robot[0,0]
-            self.est_pose_eastings_m = p_robot[1,0]
-            self.est_pose_yaw_rad = p_robot[2,0]
 
             msg = self.pose_parse([datetime.utcnow().timestamp(),self.est_pose_northings_m,self.est_pose_eastings_m,0,0,0,self.est_pose_yaw_rad])
            
+            print("BEFORE")
             # logs the data            
             self.datalog.log(msg, topic_name="/est_pose")
+
+            print("PASSED")
 
             #################### Trajectory sample #################################    
             # feedforward control: check wp progress and sample reference trajectory

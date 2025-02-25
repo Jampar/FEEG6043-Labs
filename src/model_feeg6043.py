@@ -1115,13 +1115,13 @@ def extended_kalman_filter_predict(mu, Sigma, u, f, R, dt, view_flag=False, x=No
     view_flag -- A boolean to show intermediate plots of the prediction and measurement update
     optional argument -- a range of states to plot probabilities over, using numpy arrays e.g. np.arange(-8,8,0.05)    
     """    
+
     # (1) Project the state forward
     pred_mu, F = f(mu, u, dt)
       
     # (2) Project the error forward: 
 
     pred_Sigma = (F @ copy.copy(Sigma) @ F.T) + R
-    
 
     
     # Return the predicted state and the covariance
